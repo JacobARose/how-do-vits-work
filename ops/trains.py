@@ -1,3 +1,11 @@
+"""
+
+Adapted by Jacob Rose
+Cloned on 5-15-22
+
+"""
+
+
 import os
 import time
 import copy
@@ -13,6 +21,7 @@ import torchvision
 
 from timm.loss import SoftTargetCrossEntropy, LabelSmoothingCrossEntropy
 from timm.data import Mixup
+from tqdm.auto import tqdm, trange
 
 import ops.tests as tests
 import ops.meters as meters
@@ -76,18 +85,22 @@ def train(model, optimizer,
 
     model = model.cuda() if gpu else model.cpu()
     warmup_time = time.time()
-    for epoch in range(warmup_epochs):
+    pbar = trange(warmup_epochs)
+    for epoch in pbar:
         batch_time = time.time()
         *train_metrics, = train_epoch(optimizer, model, dataset_train,
-                                      smoothing=smoothing, mixup_function=mixup_function,
+                                      smoothing=smoothing,
+                                      mixup_function=mixup_function,
                                       max_norm=max_norm,
-                                      scheduler=warmup_scheduler, gpu=gpu)
+                                      scheduler=warmup_scheduler,
+                                      gpu=gpu)
         batch_time = time.time() - batch_time
         template = "(%.2f sec/epoch) Warmup epoch: %d, Loss: %.4f, lr: %.3e"
-        print(template % (batch_time,
-                          epoch,
-                          train_metrics[0],
-                          [param_group["lr"] for param_group in optimizer.param_groups][0]))
+        pbar.set_description(template % (batch_time,
+                                         epoch,
+                                         train_metrics[0],
+                                         [param_group["lr"] for param_group in optimizer.param_groups][0])
+                            )
 
         if writer is not None and (epoch + 1) % 1 == 0:
             *test_metrics, cal_diag = tests.test(model, n_ff, dataset_val, verbose=False, gpu=gpu)
@@ -95,8 +108,10 @@ def train(model, optimizer,
     if warmup_epochs > 0:
         print("The model is warmed up: %.2f sec \n" % (time.time() - warmup_time))
         models.save_snapshot(model, dataset_name, uid, "warmup", optimizer, root=root) if snapshot_cond else None
+    pbar.close()
 
-    for epoch in range(epochs):
+    pbar = trange(epochs)
+    for epoch in pbar:
         batch_time = time.time()
         *train_metrics, = train_epoch(optimizer, model, dataset_train,
                                       smoothing=smoothing, mixup_function=mixup_function,
@@ -107,11 +122,13 @@ def train(model, optimizer,
 
         if writer is not None and (epoch + 1) % 1 == 0:
             add_train_metrics(writer, train_metrics, epoch)
+            batch_time = time.time() - batch_time
             template = "(%.2f sec/epoch) Epoch: %d, Loss: %.4f, lr: %.3e"
-            print(template % (batch_time,
-                              epoch,
-                              train_metrics[0],
-                              [param_group["lr"] for param_group in optimizer.param_groups][0]))
+            pbar.set_description(template % (batch_time,
+                                             epoch,
+                                             train_metrics[0],
+                                             [param_group["lr"] for param_group in optimizer.param_groups][0])
+                                )
 
         if writer is not None and (epoch + 1) % 1 == 0:
             *test_metrics, cal_diag = tests.test(model, n_ff, dataset_val, verbose=False, gpu=gpu)
@@ -126,10 +143,17 @@ def train(model, optimizer,
                     writer.add_histogram("%s/%s" % (name[0], ".".join(name[1:])), param, global_step=epoch)
         if snapshot_cond and (epoch + 1) % snapshot == 0:
             models.save_snapshot(model, dataset_name, uid, epoch, optimizer, root=root) if snapshot_cond else None
+    pbar.close()
 
 
-def train_epoch(optimizer, model, dataset,
-                smoothing=0.0, mixup_function=None, max_norm=None, scheduler=None, gpu=True):
+def train_epoch(optimizer,
+                model,
+                dataset,
+                smoothing=0.0,
+                mixup_function=None,
+                max_norm=None,
+                scheduler=None,
+                gpu=True):
     model.train()
     if mixup_function is not None:
         loss_function = SoftTargetCrossEntropy()
@@ -144,7 +168,8 @@ def train_epoch(optimizer, model, dataset,
     l1_meter = meters.AverageMeter("l1")
     l2_meter = meters.AverageMeter("l2")
 
-    for step, (xs, ys) in enumerate(dataset):
+    num_batches = len(dataset)
+    for step, (xs, ys) in enumerate(tqdm(dataset, desc=f"Batches-per-epoch={num_batches}")):
         if gpu:
             xs = xs.cuda()
             ys = ys.cuda()
